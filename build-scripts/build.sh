@@ -45,6 +45,7 @@ dnf -y install --setopt=install_weak_deps=False \
   wireguard-tools \
   xdg-dbus-proxy \
   xdg-user-dirs \
+  udisks2-lvm2
 
 dnf config-manager --add-repo https://pkgs.tailscale.com/stable/centos/"$(rpm -E %centos)"/tailscale.repo
 dnf config-manager --set-disabled tailscale-stable
