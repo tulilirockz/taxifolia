@@ -29,6 +29,7 @@ dnf -y install --setopt=install_weak_deps=False \
   open-vm-tools \
   pcp-zeroconf \
   qemu-guest-agent \
+  rsync \
   systemd-resolved \
   udisks2-lvm2 \
   virt-install \
