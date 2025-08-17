@@ -27,6 +27,7 @@ dnf -y install --setopt=install_weak_deps=False \
   libvirt-daemon-kvm \
   NetworkManager-wifi \
   open-vm-tools \
+  pcp-zeroconf \
   qemu-guest-agent \
   systemd-resolved \
   udisks2-lvm2 \
