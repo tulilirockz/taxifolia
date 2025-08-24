@@ -3,6 +3,8 @@
 set -xeuo pipefail
 
 systemctl enable sshd
+systemctl enable podman-auto-update.timer
+systemctl enable --global podman-auto-update.timer
 
 dnf -y remove \
   adcli \
@@ -51,7 +53,10 @@ dnf -y install epel-release
 dnf config-manager --set-disabled epel
 dnf -y install --enablerepo="epel" just
 
-install -Dpm0644 -t /usr/lib/systemd /tmp/files/usr/lib/systemd/zram-generator.conf
+tee /usr/lib/systemd/zram-generator.conf <<EOF
+[zram0]
+zram-size = min(ram, 8192)
+EOF
 
 sed -i 's|^ExecStart=.*|ExecStart=/usr/bin/bootc update --quiet|' /usr/lib/systemd/system/bootc-fetch-apply-updates.service
 sed -i 's|^OnUnitInactiveSec=.*|OnUnitInactiveSec=7d\nPersistent=true|' /usr/lib/systemd/system/bootc-fetch-apply-updates.timer
