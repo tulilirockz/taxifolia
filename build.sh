@@ -35,7 +35,8 @@ dnf -y install --setopt=install_weak_deps=False \
   systemd-resolved \
   udisks2-lvm2 \
   virt-install \
-  xdg-user-dirs
+  xdg-user-dirs \
+  greenboot
 
 systemctl enable firewalld
 
@@ -51,7 +52,18 @@ dnf -y install --enablerepo="copr:copr.fedorainfracloud.org:ublue-os:packages" -
 
 dnf -y install epel-release
 dnf config-manager --set-disabled epel
-dnf -y install --enablerepo="epel" just
+dnf -y install --enablerepo="epel" \
+  just \
+  systemd-networkd \
+  systemd-networkd-defaults \
+  systemd-timesyncd
+
+systemctl enable systemd-networkd
+systemctl enable systemd-timesyncd
+
+dnf remove -y \
+  chrony \
+  NetworkManager
 
 tee /usr/lib/systemd/zram-generator.conf <<EOF
 [zram0]
