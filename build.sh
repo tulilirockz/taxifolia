@@ -13,43 +13,29 @@ dnf -y remove \
   subscription-manager \
   subscription-manager-rhsm-certificates \
   toolbox \
-  yggdrasil
+  yggdrasil \
+  chrony \
+  NetworkManager
 
 dnf -y install --setopt=install_weak_deps=False \
-  cockpit-machines \
-  cockpit-networkmanager \
-  cockpit-podman \
-  cockpit-selinux \
-  cockpit-storaged \
-  cockpit-system \
+  audit \
   firewalld \
   git-core \
-  libvirt-client \
-  libvirt-daemon \
-  libvirt-daemon-kvm \
-  NetworkManager-wifi \
-  open-vm-tools \
-  pcp-zeroconf \
-  qemu-guest-agent \
+  greenboot \
+  ppp \
   rsync \
   systemd-resolved \
+  traceroute \
   udisks2-lvm2 \
-  virt-install \
-  xdg-user-dirs \
-  greenboot \
-  ppp
+  xdg-user-dirs
 
+systemctl enable auditd
 systemctl enable firewalld
 
 dnf config-manager --add-repo "https://pkgs.tailscale.com/stable/centos/$(rpm -E %centos)/tailscale.repo"
 dnf config-manager --set-disabled tailscale-stable
 dnf -y install --enablerepo='tailscale-stable' tailscale
 systemctl enable tailscaled
-
-dnf -y copr enable ublue-os/packages
-dnf -y copr disable ublue-os/packages
-dnf -y install --enablerepo="copr:copr.fedorainfracloud.org:ublue-os:packages" --setopt=install_weak_deps=False \
-    ublue-os-libvirt-workarounds
 
 dnf -y install epel-release
 dnf config-manager --set-disabled epel
@@ -62,20 +48,6 @@ dnf -y install --enablerepo="epel" \
 systemctl enable systemd-networkd
 systemctl enable systemd-timesyncd
 
-dnf remove -y \
-  chrony \
-  NetworkManager
-
-tee /usr/lib/systemd/zram-generator.conf <<EOF
-[zram0]
-zram-size = min(ram, 8192)
-EOF
-
-tee /usr/lib/sysctl.d/99-rcore-memmax.conf <<EOF
-# Required for unprivileged unbound
-net.core.rmem_max=262144
-EOF
-
 sed -i 's|^ExecStart=.*|ExecStart=/usr/bin/bootc update --quiet|' /usr/lib/systemd/system/bootc-fetch-apply-updates.service
 sed -i 's|^OnUnitInactiveSec=.*|OnUnitInactiveSec=7d\nPersistent=true|' /usr/lib/systemd/system/bootc-fetch-apply-updates.timer
 sed -i 's|#AutomaticUpdatePolicy.*|AutomaticUpdatePolicy=stage|' /etc/rpm-ostreed.conf
@@ -83,12 +55,26 @@ sed -i 's|#LockLayering.*|LockLayering=true|' /etc/rpm-ostreed.conf
 
 systemctl enable bootc-fetch-apply-updates
 
-cat >/usr/lib/systemd/system-preset/91-resolved-default.preset <<'EOF'
+tee /usr/lib/systemd/zram-generator.conf <<'EOF'
+[zram0]
+zram-size = min(ram, 8192)
+EOF
+tee /usr/lib/sysctl.d/99-rcore-memmax.conf <<'EOF'
+# Required for unprivileged unbound
+net.core.rmem_max=262144
+EOF
+tee /usr/lib/sysctl.d/99-forwarding <<'EOF'
+# Kernel needs to be happy for ipv6 assignment on LAN devices
+net.ipv6.conf.all.forwarding=1
+net.ipv6.conf.default.forwarding=1
+EOF
+tee /usr/lib/systemd/system-preset/91-resolved-default.preset <<'EOF'
 enable systemd-resolved.service
 EOF
-cat >/usr/lib/tmpfiles.d/resolved-default.conf <<'EOF'
+tee /usr/lib/tmpfiles.d/resolved-default.conf <<'EOF'
 L /etc/resolv.conf - - - - ../run/systemd/resolve/stub-resolv.conf
 EOF
+
 systemctl preset systemd-resolved.service
 
 KERNEL_VERSION="$(find "/usr/lib/modules" -maxdepth 1 -type d ! -path "/usr/lib/modules" -exec basename '{}' ';' | sort | tail -n 1)"
