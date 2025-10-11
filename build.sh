@@ -19,6 +19,11 @@ dnf -y remove \
 
 dnf -y install --setopt=install_weak_deps=False \
   audit \
+  audit-libs \
+  audit-rules \
+  rpm-plugin-audit \
+  python3-audit \
+  tcpdump \
   firewalld \
   git-core \
   greenboot \
@@ -41,6 +46,7 @@ dnf -y install epel-release
 dnf config-manager --set-disabled epel
 dnf -y install --enablerepo="epel" \
   just \
+  fail2ban \
   systemd-networkd \
   systemd-networkd-defaults \
   systemd-timesyncd
