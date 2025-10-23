@@ -2,7 +2,7 @@ FROM scratch AS ctx
 
 COPY build.sh /build.sh
 
-FROM quay.io/centos-bootc/centos-bootc:c10s
+FROM quay.io/centos-bootc/centos-bootc:c10s@sha256:812128e7ae86fd375c8c229e3d8f6b3048b4b31578f76556fe8df76d22425af1
 
 RUN --mount=type=tmpfs,dst=/var \
     --mount=type=tmpfs,dst=/tmp \
