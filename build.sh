@@ -2,34 +2,67 @@
 
 set -xeuo pipefail
 
+tee /usr/lib/systemd/journald.conf.d/99-audit.conf <<'EOF'
+[Journal]
+Audit=yes
+ReadKMsg=yes
+EOF
+
 systemctl enable sshd
 systemctl enable podman-auto-update.timer
 systemctl enable --global podman-auto-update.timer
 
+# Unsure why removing nfs-utils is annoying here
+mkdir -p /var/lib/rpm-state/
+touch /var/lib/rpm-state/nfs-server.cleanup
+
 dnf -y remove \
+  NetworkManager \
   adcli \
+  bash-completion \
+  bind-utils \
+  chrony \
+  cloud-utils-growpart \
+  criu* \
+  efibootmgr \
+  ethtool \
+  flatpak-session-helper \
+  jq \
   libdnf-plugin-subscription-manager \
+  nano \
+  net-tools \
+  nfs-server \
+  nfs-utils \
+  pkg-config* \
+  python3-cloud-what \
   python3-subscription-manager-rhsm \
+  socat \
+  sos \
+  sssd* \
+  stalld \
   subscription-manager \
   subscription-manager-rhsm-certificates \
+  sudo-python-plugin \
   toolbox \
-  yggdrasil \
-  chrony \
-  NetworkManager
+  virt-what \
+  yggdrasil*
 
 dnf -y install --setopt=install_weak_deps=False \
   audit \
   audit-libs \
   audit-rules \
-  rpm-plugin-audit \
-  python3-audit \
-  tcpdump \
+  console-login-helper-messages \
+  console-login-helper-messages-issuegen \
+  console-login-helper-messages-motdgen \
+  console-login-helper-messages-profile \
   firewalld \
   git-core \
   greenboot \
   ppp \
   rsync \
+  systemd-oomd \
   systemd-resolved \
+  tcpdump \
   traceroute \
   udisks2-lvm2 \
   xdg-user-dirs
@@ -37,16 +70,10 @@ dnf -y install --setopt=install_weak_deps=False \
 systemctl enable auditd
 systemctl enable firewalld
 
-dnf config-manager --add-repo "https://pkgs.tailscale.com/stable/centos/$(rpm -E %centos)/tailscale.repo"
-dnf config-manager --set-disabled tailscale-stable
-dnf -y install --enablerepo='tailscale-stable' tailscale
-systemctl enable tailscaled
-
 dnf -y install epel-release
 dnf config-manager --set-disabled epel
 dnf -y install --enablerepo="epel" \
   just \
-  fail2ban \
   systemd-networkd \
   systemd-networkd-defaults \
   systemd-timesyncd
