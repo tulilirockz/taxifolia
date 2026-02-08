@@ -37,7 +37,7 @@ jobs:
     steps:
       - name: Mount BTRFS for podman storage
         if: ${{ matrix.platform != 'arm64' }}
-        uses: ublue-os/container-storage-action@911baca08baf30c8654933e9e9723cb399892140
+        uses: ublue-os/container-storage-action@4d41781c2d4394275fec1397a244a74ea4fbc08c
         continue-on-error: true
         with:
           target-dir: /var/lib/containers
