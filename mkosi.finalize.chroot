@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -xeuo pipefail
+
+HOME_URL="https://github.com/tulilirockz/taxifolia"
+echo "taxifolia" | tee "/etc/hostname"
+sed -i -f - /usr/lib/os-release <<EOF
+s|^NAME=.*|NAME=\"Taxifolia\"|
+s|^PRETTY_NAME=.*|PRETTY_NAME=\"Taxifolia"|
+s|^VARIANT_ID=.*|VARIANT_ID=""|
+s|^HOME_URL=.*|HOME_URL=\"${HOME_URL}\"|
+s|^BUG_REPORT_URL=.*|BUG_REPORT_URL=\"${HOME_URL}/issues\"|
+s|^SUPPORT_URL=.*|SUPPORT_URL=\"${HOME_URL}/issues\"|
+s|^CPE_NAME=\".*\"|CPE_NAME=\"cpe:tulilirockz:taxifolia\"|
+s|^DOCUMENTATION_URL=.*|DOCUMENTATION_URL=\"${HOME_URL}\"|
+s|^DEFAULT_HOSTNAME=.*|DEFAULT_HOSTNAME="taxifolia"|
+
+/^REDHAT_BUGZILLA_PRODUCT=/d
+/^REDHAT_BUGZILLA_PRODUCT_VERSION=/d
+/^REDHAT_SUPPORT_PRODUCT=/d
+/^REDHAT_SUPPORT_PRODUCT_VERSION=/d
+EOF
+
+# Workaround for https://issues.redhat.com/browse/RHEL-106203
+rm -f /usr/lib/tmpfiles.d/home.conf
+
+
+# fedora-bootc/minimal/systemd-presets.yaml
+
+rm -rf /etc/systemd/system/*
+systemctl preset-all
+rm -rf /etc/systemd/user/*
+systemctl --user --global preset-all
+
