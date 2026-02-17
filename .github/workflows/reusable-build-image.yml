@@ -95,9 +95,9 @@ jobs:
           MATRIX_BASE_NAME: ${{ matrix.base_name }}
         with:
           path: mkosi.cache
-          key: ${{ runner.os }}-mkosi-${{ env.IMAGE_NAME }}
+          key: ${{ runner.os }}-mkosi-${{ env.IMAGE_NAME }}-${{ matrix.platform }}
           restore-keys: |
-            ${{ runner.os }}-mkosi-${{ env.IMAGE_NAME }}
+            ${{ runner.os }}-mkosi-${{ env.IMAGE_NAME }}-${{ matrix.platform }}
 
       - name: Install dependencies for build
         run: |

@@ -20,14 +20,11 @@ s|^DEFAULT_HOSTNAME=.*|DEFAULT_HOSTNAME="taxifolia"|
 /^REDHAT_SUPPORT_PRODUCT_VERSION=/d
 EOF
 
-# Workaround for https://issues.redhat.com/browse/RHEL-106203
-rm -f /usr/lib/tmpfiles.d/home.conf
-
-
-# fedora-bootc/minimal/systemd-presets.yaml
-
-rm -rf /etc/systemd/system/*
-systemctl preset-all
-rm -rf /etc/systemd/user/*
-systemctl --user --global preset-all
-
+systemctl --global preset podman-auto-update.timer
+systemctl preset auditd.service
+systemctl preset bootc-fetch-apply-updates.service
+systemctl preset firewalld.service
+systemctl preset podman-auto-update.timer
+systemctl preset sshd.service
+systemctl preset systemd-networkd.service
+systemctl preset systemd-timesyncd.service
