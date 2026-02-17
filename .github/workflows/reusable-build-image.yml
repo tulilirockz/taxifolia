@@ -26,6 +26,11 @@ on:
         required: false
         type: boolean
         default: true
+      cleanup_action:
+        description: "Use cleanup action from ublue to get more storage on CI"
+        required: false
+        type: boolean
+        default: false
     secrets:
       SIGNING_SECRET:
         description: "The private key used to sign the image"
@@ -74,7 +79,7 @@ jobs:
     runs-on: ${{ matrix.platform == 'amd64' && 'ubuntu-24.04' || 'ubuntu-24.04-arm' }}
     steps:
       - name: Mount BTRFS for podman storage
-        if: ${{ matrix.platform != 'arm64' }}
+        if: matrix.platform != 'arm64' && inputs.cleanup_action
         uses: ublue-os/container-storage-action@911baca08baf30c8654933e9e9723cb399892140
         continue-on-error: true
         with:
