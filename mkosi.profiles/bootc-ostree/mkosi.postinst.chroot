@@ -20,3 +20,27 @@ ln -sT var/opt /opt
 ln -sT var/roothome /root
 ln -sT var/srv /srv
 ln -sT ../../var/usrlocal /usr/local
+
+
+# fedora-bootc/minimal/basic-fixes.yaml
+
+mkdir -p /usr/lib/systemd/system/local-fs.target.wants
+if test '!' -f /usr/lib/systemd/system/local-fs.target.wants/tmp.mount; then
+  ln -sf ../tmp.mount /usr/lib/systemd/system/local-fs.target.wants
+fi
+
+# See https://github.com/containers/bootc/issues/358
+# basically systemd-tmpfiles doesn't follow symlinks; ordinarily our
+# tmpfiles.d unit for `/var/roothome` is fine, but this actually doesn't
+# work if we want to use tmpfiles.d to write to `/root/.ssh` because
+# tmpfiles gives up on that before getting to `/var/roothome`.
+#
+# Redirect stdout to /dev/null because of some weird stdout issue
+# with newer rpm-ostree: https://github.com/coreos/rpm-ostree/pull/5388#issuecomment-2971623787
+sed -i -e 's, /root, /var/roothome,' /usr/lib/tmpfiles.d/provision.conf > /dev/null
+# Because /var/roothome is also defined in rpm-ostree-0-integration.conf
+# we need to delete /var/roothome
+#
+# Redirect stdout to /dev/null because of some weird stdout issue
+# with newer rpm-ostree: https://github.com/coreos/rpm-ostree/pull/5388#issuecomment-2971623787
+sed -i -e '/^d- \/var\/roothome /d' /usr/lib/tmpfiles.d/provision.conf > /dev/null
