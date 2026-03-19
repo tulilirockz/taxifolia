@@ -1,15 +1,26 @@
-image := env("IMAGE_NAME", "localhost/taxifolia:latest")
+image := env("IMAGE_FULL", "localhost/taxifolia:latest")
 filesystem := env("BUILD_FILESYSTEM", "ext4")
 
-default: build load ostree-rechunk
+default:
+    #!/usr/bin/env bash
+    set -xeuo pipefail
+    just build
+    sudo just load
+    sudo just lint
+    sudo just ostree-rechunk
+    sudo env BUILD_BASE_DIR=/tmp just disk-image
+    vmbuddy -f /tmp/bootable.img
 
 build:
-    mkosi -B
+    mkosi -B --debug
+
+lint:
+    podman run --rm -it --entrypoint=bootc {{ image }} container lint
 
 load:
     #!/usr/bin/env bash
     set -x
-    sudo podman load -i "$(find mkosi.profiles/bootc-ostree/mkosi.output/* -maxdepth 0 -type d -printf "%T@ ,%p\n" -iname "_*" -print0 | sort -n | head -n1 | cut -d, -f2)" -q | cut -d: -f3 | xargs -I{} sudo podman tag {} {{image}}
+    podman load -i "$(find mkosi.profiles/bootc-ostree/mkosi.output/* -maxdepth 0 -type d -printf "%T@ ,%p\n" -iname "_*" -print0 | sort -n | head -n1 | cut -d, -f2)" -q | cut -d: -f3 | xargs -I{} podman tag {} {{image}}
 
 ostree-rechunk:
     #!/usr/bin/env bash
@@ -18,12 +29,12 @@ ostree-rechunk:
           -t \
           -v /var/lib/containers:/var/lib/containers \
           "quay.io/centos-bootc/centos-bootc:stream10" \
-          /usr/libexec/bootc-base-imagectl rechunk \
+          /usr/libexec/bootc-base-imagectl rechunk --max-layers 167 \
           "{{image}}" \
           "{{image}}" || exit 1
 
 bootc *ARGS:
-    sudo podman run \
+    podman run \
         --rm --privileged --pid=host \
         -it \
         -v /sys/fs/selinux:/sys/fs/selinux \
@@ -40,9 +51,20 @@ disk-image $filesystem=filesystem:
         fallocate -l 20G "${BUILD_BASE_DIR:-.}/bootable.img"
     fi
     just bootc install to-disk --via-loopback /data/bootable.img --filesystem "${filesystem}" --wipe
+
 rechunk:
     #!/usr/bin/env bash
     IMG="{{ image }}"
     # podman pull $IMG # image must be available locally
-    export CHUNKAH_CONFIG_STR=$(sudo podman inspect $IMG)
-    sudo podman run --rm --mount=type=image,src=$IMG,dest=/chunkah -e CHUNKAH_CONFIG_STR quay.io/jlebon/chunkah build --label ostree.bootable=1 | sudo podman load
+    export CHUNKAH_CONFIG_STR="$(sudo podman inspect "${IMG}")"
+    podman run --rm "--mount=type=image,src=${IMG},dest=/chunkah" -e CHUNKAH_CONFIG_STR quay.io/jlebon/chunkah build --label ostree.bootable=1 --compressed --max-layers 67 | \
+        podman load | \
+        sort -n | \
+        head -n1 | \
+        cut -d, -f2 | \
+        cut -d: -f3 | \
+        xargs -I{} sudo podman tag {} {{image}}
+
+clean:
+    mkosi clean
+    sudo rm -r mkosi.tools/ mkosi.cache/

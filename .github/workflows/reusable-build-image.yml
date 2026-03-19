@@ -31,6 +31,11 @@ on:
         required: false
         type: boolean
         default: false
+      profiles:
+        description: "Extra mkosi profiles to use"
+        required: false
+        type: string
+        default: ""
     secrets:
       SIGNING_SECRET:
         description: "The private key used to sign the image"
@@ -107,25 +112,35 @@ jobs:
       - name: Install dependencies for build
         run: |
           set -x
-          sudo apt install -y mkosi podman git
+          sudo apt install -y --no-install-recommends bubblewrap debian-archive-keyring python3-gpg python3-hawkey python3-libcomps python3-unbound
           git clone https://github.com/systemd/mkosi.git
           sudo mv mkosi /usr/src/mkosi
           sudo ln -sf "/usr/src/mkosi/bin/mkosi" /usr/bin/mkosi
 
       - name: Build image
         id: build
+        env:
+          CI_MKOSI_PROFILES: ${{inputs.profiles}}
         run: |
-          sudo env IMAGE_NAME="${IMAGE_NAME}" $(which just) build
+          PROFILE_ARGUMENTS=()
+          if [ "$CI_MKOSI_PROFILES" != "" ] ; then
+            PROFILE_ARGUMENTS+=("--profile=$CI_MKOSI_PROFILES")
+          fi
+          sudo env IMAGE_FULL="localhost/${IMAGE_NAME}:latest" mkosi -B ${PROFILE_ARGUMENTS}
 
       - name: Load image
         id: load
         run: |
-          sudo $(which just) load
+          sudo env IMAGE_FULL="localhost/${IMAGE_NAME}:latest" $(which just) load
 
       - name: Rechunk image
         id: rechunk
         run: |
-          sudo $(which just) ostree-rechunk
+          sudo env IMAGE_FULL="localhost/${IMAGE_NAME}:latest" $(which just) ostree-rechunk
+
+      - name: Lint image
+        run: |
+          sudo env IMAGE_FULL="localhost/${IMAGE_NAME}:latest" $(which just) lint
 
       # https://github.com/actions/cache/issues/1533
       - name: Hack around permission issue caching
@@ -134,7 +149,7 @@ jobs:
           sudo chmod 777 --recursive mkosi.cache
 
       - name: Login to GitHub Container Registry
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        if: inputs.publish
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           LOGIN_USER: ${{ github.actor }}
@@ -146,12 +161,12 @@ jobs:
       # needed because old podman doesn't push layer annotations for
       # the rpm-ostree rechunker at all
       - name: Install Podman from Brew
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        if: inputs.publish
         run: |
           /home/linuxbrew/.linuxbrew/bin/brew install podman
 
       - name: Push to GHCR
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        if: inputs.publish
         id: push
         env:
           IMAGE_REGISTRY: ${{ env.IMAGE_REGISTRY }}
@@ -175,10 +190,10 @@ jobs:
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@v4.0.0
-        if: github.event_name != 'pull_request'
+        if: inputs.publish
 
       - name: Sign Image
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        if: inputs.publish
         env:
           REMOTE_IMAGE_DIGEST: ${{ steps.push.outputs.remote_image_digest }}
           COSIGN_EXPERIMENTAL: false
@@ -186,7 +201,7 @@ jobs:
         run: cosign sign -y --new-bundle-format=false --use-signing-config=false --key env://COSIGN_PRIVATE_KEY "${IMAGE_REGISTRY}/${IMAGE_NAME}@${REMOTE_IMAGE_DIGEST}"
 
       - name: Create Job Outputs
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        if: inputs.publish
         env:
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
           PLATFORM: ${{ matrix.platform }}
@@ -197,7 +212,7 @@ jobs:
           echo "${DIGEST}" | tee "/tmp/outputs/digests/${IMAGE_NAME}-${PLATFORM}.txt"
 
       - name: Upload Output Artifacts
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        if: inputs.publish
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v5
         with:
           name: ${{ env.IMAGE_NAME }}-${{ matrix.platform }}
@@ -257,7 +272,7 @@ jobs:
             containers.bootc=1
             io.artifacthub.package.deprecated=false
             io.artifacthub.package.keywords=${{ env.IMAGE_KEYWORDS }}
-            io.artifacthub.package.license=Apache-2.0
+            io.artifacthub.package.license=AGPL-2.0
             io.artifacthub.package.logo-url=${{ env.IMAGE_LOGO_URL }}
             io.artifacthub.package.prerelease=false
             io.artifacthub.package.readme-url=https://raw.githubusercontent.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/${{ github.sha }}/README.md
@@ -271,7 +286,7 @@ jobs:
             org.opencontainers.image.version=${{ env.DEFAULT_TAG }}.{{date 'YYYYMMDD'}}
 
       - name: Fetch Build Outputs
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        if: inputs.publish
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v6
         with:
           pattern: ${{ env.IMAGE_NAME }}-*
@@ -279,7 +294,7 @@ jobs:
           path: /tmp/artifacts
 
       - name: Load Outputs
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        if: inputs.publish
         shell: bash
         id: load-outputs
         run: |
@@ -295,7 +310,7 @@ jobs:
           echo "OUTPUT_CSV=$(base32 -w 0 < "${OUTCSV}")" | tee -a "${GITHUB_OUTPUT}"
 
       - name: Login to GitHub Container Registry
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        if: inputs.publish
         env:
           REGISTRY: ghcr.io
         run: |
@@ -308,7 +323,7 @@ jobs:
 
       - name: Publish manifest with unified architecture and sign
         shell: bash
-        if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        if: inputs.publish
         env:
           COSIGN_EXPERIMENTAL: false
           COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
