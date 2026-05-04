@@ -1,0 +1,27 @@
+[Unit]
+Description=PPP connection for %I
+Documentation=man:pppd(8)
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/pppd up_sdnotify nolog noresolvconf call %I
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+PrivateTmp=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/run/
+Restart=always
+RestartSec=30
+RestrictRealtime=yes
+StandardOutput=null
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+# NEVER DO PRIVATE USERS
+#PrivateUsers=yes
+
+[Install]
+WantedBy=sys-devices-virtual-net-%i.device
+WantedBy=multi-user.target
+WantedBy=network-online.target
