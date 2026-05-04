@@ -1,8 +1,12 @@
+disable NetworkManager.service
+disable systemd-timesyncd.service
 enable auditd.service
 enable bootc-fetch-apply-updates.service
 enable firewalld.service
+enable ntpd-rs.service
 enable podman-auto-update.timer
+enable pppd@vivo.service
+enable rechunker-group-fix.service
 enable sshd.service
 enable systemd-networkd.service
 enable systemd-timesyncd.service
-disable NetworkManager
