@@ -166,6 +166,7 @@ jobs:
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
           IMAGE_DIGEST: ${{ steps.load.outputs.digest }}
           PLATFORM: ${{ matrix.platform }}
+          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
           MAX_RETRIES: 3
         run: |
           set -x
@@ -178,18 +179,6 @@ jobs:
             sudo /home/linuxbrew/.linuxbrew/bin/podman push --retry "${MAX_RETRIES}" --compression-format=zstd --digestfile=/tmp/digestfile "localhost/${IMAGE_NAME}:${DEFAULT_TAG}" "${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}-${PLATFORM}" "--sign-by-sigstore-private-key=${PRIVATE_KEY_FILE}"
           done
           echo "remote_image_digest=$(< /tmp/digestfile)" | tee "${GITHUB_OUTPUT}"
-
-      # - name: Install Cosign
-      #   uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
-      #   if: inputs.publish
-
-      # - name: Sign Image
-      #   if: inputs.publish
-      #   env:
-      #     REMOTE_IMAGE_DIGEST: ${{ steps.push.outputs.remote_image_digest }}
-      #     COSIGN_EXPERIMENTAL: false
-      #     COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
-      #   run: cosign sign -y --new-bundle-format=false --use-signing-config=false --key env://COSIGN_PRIVATE_KEY "${IMAGE_REGISTRY}/${IMAGE_NAME}@${REMOTE_IMAGE_DIGEST}"
 
       - name: Create Job Outputs
         if: inputs.publish
