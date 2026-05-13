@@ -11,6 +11,11 @@ on:
         description: "The description of the image to build"
         required: false
         type: string
+      default-tag:
+        description: "Default tag to push to"
+        required: false
+        type: string
+        default: "latest"
       platforms:
         description: "The platforms to build the image for"
         required: false
@@ -36,6 +41,10 @@ on:
         required: false
         type: string
         default: ""
+      release:
+        description: "Release to build for"
+        required: false
+        type: string
     secrets:
       SIGNING_SECRET:
         description: "The private key used to sign the image"
@@ -47,7 +56,7 @@ env:
   IMAGE_LOGO_URL: "https://avatars.githubusercontent.com/u/120078124?s=200&v=4"
   IMAGE_NAME: "${{ github.event.repository.name }}"
   IMAGE_REGISTRY: "ghcr.io/${{ github.repository_owner }}"
-  DEFAULT_TAG: "latest"
+  DEFAULT_TAG: "${{ inputs.default-tag }}"
   IMAGE_LICENSE: Apache-2.0
 
 jobs:
@@ -77,7 +86,7 @@ jobs:
     needs: generate_matrix
     strategy:
       fail-fast: false
-      matrix: ${{fromJson(needs.generate_matrix.outputs.matrix)}}
+      matrix: ${{ fromJson(needs.generate_matrix.outputs.matrix) }}
     runs-on: ${{ matrix.platform == 'amd64' && 'ubuntu-24.04' || 'ubuntu-24.04-arm' }}
     steps:
       - name: Mount BTRFS for podman storage
@@ -93,8 +102,26 @@ jobs:
         with:
           submodules: true
 
-      - name: Setup Just
-        uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
+      # We need newer podman due to old podman not supporting lots of flags
+      - name: Update podman and install just
+        shell: bash
+        run: |
+          set -eux
+          # Require the runner is ubuntu-24.04
+          IDV=$(. /usr/lib/os-release && echo ${ID}-${VERSION_ID})
+          test "${IDV}" = "ubuntu-24.04"
+          # resolute is the next release. The azure.archive.ubuntu.com mirror only carries amd64.
+          # Other architectures like arm64 use ports.ubuntu.com/ubuntu-ports.
+          if [ "$(dpkg --print-architecture)" = "amd64" ]; then
+            mirror="http://azure.archive.ubuntu.com/ubuntu"
+          else
+            mirror="http://ports.ubuntu.com/ubuntu-ports"
+          fi
+          echo "deb ${mirror} resolute universe main" | sudo tee /etc/apt/sources.list.d/resolute.list
+          /bin/time -f '%E %C' sudo apt update
+          # skopeo is currently older in resolute for some reason hence --allow-downgrades
+          /bin/time -f '%E %C' sudo apt install -y --allow-downgrades crun/resolute buildah/resolute podman/resolute skopeo/resolute just/resolute
+          podman --version
 
       - name: Install dependencies for build
         run: |
@@ -143,16 +170,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           LOGIN_USER: ${{ github.actor }}
-        run: |
-          echo "${GITHUB_TOKEN}" | sudo podman login -u "${LOGIN_USER}" --password-stdin "ghcr.io"
-
-      # TODO: remove me when we have a new podman in 26.04 runners
-      # needed because old podman doesn't push layer annotations for
-      # the rpm-ostree rechunker at all
-      - name: Install Podman from Brew
-        if: inputs.publish && steps.brew-cache.outputs.cache-hit != 'true'
-        run: |
-          /home/linuxbrew/.linuxbrew/bin/brew install podman
+        run: echo "${GITHUB_TOKEN}" | sudo podman login -u "${LOGIN_USER}" --password-stdin "ghcr.io"
 
       - name: Push to GHCR
         if: inputs.publish
@@ -173,12 +191,13 @@ jobs:
           sudo mkdir -p "/etc/containers/registries.d/"
           echo -e "docker:\n  ${IMAGE_REGISTRY}:\n    use-sigstore-attachments: true" | sudo tee "/etc/containers/registries.d/${REPOSITORY_OWNER}.yaml"
 
+          DIGESTFILE="/tmp/digestfile" # This needs to be r/w, non-existent so that podman can write to it
           # HACK: push two times so layer annotations are present
           # TODO: remove me when https://github.com/containers/podman/issues/27796 fixed
           for _ in $(seq 2); do
-            sudo /home/linuxbrew/.linuxbrew/bin/podman push --retry "${MAX_RETRIES}" --compression-format=zstd --digestfile=/tmp/digestfile "localhost/${IMAGE_NAME}:${DEFAULT_TAG}" "${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}-${PLATFORM}" "--sign-passphrase-file=/dev/null" "--sign-by-sigstore-private-key=${PRIVATE_KEY_FILE}"
+            sudo /home/linuxbrew/.linuxbrew/bin/podman push --retry "${MAX_RETRIES}" --compression-format=zstd --digestfile="${DIGESTFILE}" "localhost/${IMAGE_NAME}:${DEFAULT_TAG}" "${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}-${PLATFORM}" "--sign-passphrase-file=/dev/null" "--sign-by-sigstore-private-key=${PRIVATE_KEY_FILE}"
           done
-          echo "remote_image_digest=$(< ${DIGESTFILE})" | tee "${GITHUB_OUTPUT}"
+          echo "remote_image_digest=$(< "${DIGESTFILE}")" | tee "${GITHUB_OUTPUT}"
 
       - name: Create Job Outputs
         if: inputs.publish
@@ -207,17 +226,11 @@ jobs:
     if: always()
     needs:
       - build_push
-    container:
-      image: docker.io/library/alpine:latest
-      options: --privileged --security-opt seccomp=unconfined
     permissions:
       contents: read
       packages: write
       id-token: write
     steps:
-      - name: Install dependencies
-        run: apk add bash coreutils curl docker findutils fuse-overlayfs git grep jq podman sed gettext
-
       - name: Exit on failure
         shell: bash
         env:
@@ -232,8 +245,6 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          submodules: true
 
         # This generates a timestamp like what is defined on the ArtifactHub documentation
         # E.G: 2022-02-08T15:38:15Z'
@@ -259,6 +270,7 @@ jobs:
 
       - name: Image Metadata
         uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6
+        if: inputs.publish
         id: metadata
         with:
           tags: |
@@ -290,6 +302,34 @@ jobs:
             org.opencontainers.image.vendor=${{ github.repository_owner }}
             org.opencontainers.image.version=${{ env.DEFAULT_TAG }}.{{date 'YYYYMMDD'}}
 
+
+      - name: Login to GitHub Container Registry
+        if: inputs.publish
+        env:
+          REGISTRY: ghcr.io
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
+        run: echo "${GITHUB_TOKEN}" | podman login -u "${GITHUB_ACTOR}" --password-stdin "${REGISTRY}"
+
+      - name: Update podman and install just
+        shell: bash
+        run: |
+          set -eux
+          # Require the runner is ubuntu-24.04
+          test "$(. /usr/lib/os-release && echo "${ID}-${VERSION_ID}")" = "ubuntu-24.04"
+          # resolute is the next release. The azure.archive.ubuntu.com mirror only carries amd64.
+          # Other architectures like arm64 use ports.ubuntu.com/ubuntu-ports.
+          if [ "$(dpkg --print-architecture)" = "amd64" ]; then
+            mirror="http://azure.archive.ubuntu.com/ubuntu"
+          else
+            mirror="http://ports.ubuntu.com/ubuntu-ports"
+          fi
+          echo "deb ${mirror} resolute universe main" | sudo tee /etc/apt/sources.list.d/resolute.list
+          /bin/time -f '%E %C' sudo apt update
+          # skopeo is currently older in resolute for some reason hence --allow-downgrades
+          /bin/time -f '%E %C' sudo apt install -y --allow-downgrades crun/resolute podman/resolute
+          podman --version
+
       - name: Fetch Build Outputs
         if: inputs.publish
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -314,24 +354,12 @@ jobs:
           done
           echo "OUTPUT_CSV=$(base32 -w 0 < "${OUTCSV}")" | tee -a "${GITHUB_OUTPUT}"
 
-      - name: Login to GitHub Container Registry
-        if: inputs.publish
-        env:
-          REGISTRY: ghcr.io
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_ACTOR: ${{ github.actor }}
-        run: |
-          echo "${GITHUB_TOKEN}" | podman login -u "${GITHUB_ACTOR}" --password-stdin "${REGISTRY}"
-
-      # - name: Install Cosign
-      #   uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
-      #   if: github.event_name != 'pull_request'
-
       - name: Publish manifest with unified architecture and sign
         shell: bash
         if: inputs.publish
         env:
           COSIGN_EXPERIMENTAL: false
+          MAX_RETRIES: 3
           COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
           LABELS: ${{ steps.metadata.outputs.labels }}
           OUTPUT_CSV: ${{ steps.load-outputs.outputs.OUTPUT_CSV }}
@@ -368,7 +396,7 @@ jobs:
             # TODO: remove me when https://github.com/containers/podman/issues/27796 fixed
             for _ in $(seq 2); do
               while IFS= read -r TAG; do
-                podman manifest push --all=false --compression-format=zstd "${TARGET_MANIFEST}" "${TARGET_MANIFEST}:${TAG}" "--sign-passphrase-file=/dev/null" "--sign-by-sigstore-private-key=${PRIVATE_KEY_FILE}"
+                podman manifest push --all=false --retry "${MAX_RETRIES}" --compression-format=zstd "${TARGET_MANIFEST}" "${TARGET_MANIFEST}:${TAG}" "--sign-passphrase-file=/dev/null" "--sign-by-sigstore-private-key=${PRIVATE_KEY_FILE}"
               done <<< "${TAGS}"
             done
           done
