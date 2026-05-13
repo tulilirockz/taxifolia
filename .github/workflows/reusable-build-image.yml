@@ -48,7 +48,7 @@ env:
   IMAGE_NAME: "${{ github.event.repository.name }}"
   IMAGE_REGISTRY: "ghcr.io/${{ github.repository_owner }}"
   DEFAULT_TAG: "latest"
-  IMAGE_LICENSE: AGPL-2.0
+  IMAGE_LICENSE: Apache-2.0
 
 jobs:
   generate_matrix:
@@ -100,25 +100,6 @@ jobs:
       - name: Setup Just
         uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
 
-      - name: Enable cache for brew
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
-        if: inputs.publish
-        id: brew-cache
-        with:
-          path: /home/linuxbrew
-          key: brew-${{ matrix.platform }}
-
-      - name: Setup image cache
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        if: inputs.publish
-        env:
-          MATRIX_BASE_NAME: ${{ matrix.base_name }}
-        with:
-          path: mkosi.cache
-          key: ${{ runner.os }}-mkosi-${{ env.IMAGE_NAME }}-${{ matrix.platform }}
-          restore-keys: |
-            ${{ runner.os }}-mkosi-${{ env.IMAGE_NAME }}-${{ matrix.platform }}
-
       - name: Install dependencies for build
         run: |
           set -x
@@ -160,12 +141,6 @@ jobs:
           set -e
           sudo env IMAGE_FULL="localhost/${IMAGE_NAME}:${DEFAULT_TAG}" "$(which just)" lint
 
-      # https://github.com/actions/cache/issues/1533
-      - name: Hack around permission issue caching
-        id: cache-perms
-        run: |
-          sudo chmod 777 --recursive mkosi.cache
-
       - name: Login to GitHub Container Registry
         if: inputs.publish
         env:
@@ -173,7 +148,6 @@ jobs:
           LOGIN_USER: ${{ github.actor }}
         run: |
           echo "${GITHUB_TOKEN}" | sudo podman login -u "${LOGIN_USER}" --password-stdin "ghcr.io"
-          echo "${GITHUB_TOKEN}" | docker login -u "${LOGIN_USER}" --password-stdin "ghcr.io" # For cosign
 
       # TODO: remove me when we have a new podman in 26.04 runners
       # needed because old podman doesn't push layer annotations for
@@ -197,23 +171,21 @@ jobs:
           # HACK: push two times so layer annotations are present
           # TODO: remove me when https://github.com/containers/podman/issues/27796 fixed
           for _ in $(seq 2); do
-            for i in $(seq "${MAX_RETRIES}"); do
-              sudo /home/linuxbrew/.linuxbrew/bin/podman push --compression-format=zstd --digestfile=/tmp/digestfile "localhost/${IMAGE_NAME}:${DEFAULT_TAG}" "${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}-${PLATFORM}" && break || sleep $((5 * i));
-            done
+            sudo /home/linuxbrew/.linuxbrew/bin/podman push --retry "${MAX_RETRIES}" --compression-format=zstd --digestfile=/tmp/digestfile "localhost/${IMAGE_NAME}:${DEFAULT_TAG}" "${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}-${PLATFORM}" "--sign-by-sigstore-private-key=$(echo <(echo "${COSIGN_PRIVATE_KEY}"))"
           done
           echo "remote_image_digest=$(< /tmp/digestfile)" | tee "${GITHUB_OUTPUT}"
 
-      - name: Install Cosign
-        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
-        if: inputs.publish
+      # - name: Install Cosign
+      #   uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
+      #   if: inputs.publish
 
-      - name: Sign Image
-        if: inputs.publish
-        env:
-          REMOTE_IMAGE_DIGEST: ${{ steps.push.outputs.remote_image_digest }}
-          COSIGN_EXPERIMENTAL: false
-          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
-        run: cosign sign -y --new-bundle-format=false --use-signing-config=false --key env://COSIGN_PRIVATE_KEY "${IMAGE_REGISTRY}/${IMAGE_NAME}@${REMOTE_IMAGE_DIGEST}"
+      # - name: Sign Image
+      #   if: inputs.publish
+      #   env:
+      #     REMOTE_IMAGE_DIGEST: ${{ steps.push.outputs.remote_image_digest }}
+      #     COSIGN_EXPERIMENTAL: false
+      #     COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+      #   run: cosign sign -y --new-bundle-format=false --use-signing-config=false --key env://COSIGN_PRIVATE_KEY "${IMAGE_REGISTRY}/${IMAGE_NAME}@${REMOTE_IMAGE_DIGEST}"
 
       - name: Create Job Outputs
         if: inputs.publish
@@ -355,11 +327,10 @@ jobs:
           REGISTRY: ghcr.io
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | podman login -u "${{ github.actor }}" --password-stdin "${REGISTRY}"
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login -u "${{ github.actor }}" --password-stdin "${REGISTRY}"
 
-      - name: Install Cosign
-        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
-        if: github.event_name != 'pull_request'
+      # - name: Install Cosign
+      #   uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
+      #   if: github.event_name != 'pull_request'
 
       - name: Publish manifest with unified architecture and sign
         shell: bash
@@ -396,9 +367,9 @@ jobs:
             # TODO: remove me when https://github.com/containers/podman/issues/27796 fixed
             for _ in $(seq 2); do
               while IFS= read -r TAG; do
-                podman manifest push --all=false --digestfile=/tmp/digestfile "${TARGET_MANIFEST}" "${TARGET_MANIFEST}:${TAG}"
+                podman manifest push --all=false --compression-format=zstd --digestfile=/tmp/digestfile "${TARGET_MANIFEST}" "${TARGET_MANIFEST}:${TAG}" "--sign-by-sigstore-private-key=$(echo <(echo "${COSIGN_PRIVATE_KEY}"))"
               done <<< "${TAGS}"
             done
 
-            cosign sign -y --new-bundle-format=false --use-signing-config=false --key env://COSIGN_PRIVATE_KEY "${TARGET_MANIFEST}@$(< /tmp/digestfile)"
+            # cosign sign -y --new-bundle-format=false --use-signing-config=false --key env://COSIGN_PRIVATE_KEY "${TARGET_MANIFEST}@$(< /tmp/digestfile)"
           done
