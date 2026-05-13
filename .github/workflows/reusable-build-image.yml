@@ -61,15 +61,11 @@ jobs:
         env:
           PLATFORMS: "${{ inputs.platforms }}"
         run: |
-          # turn the comma separated string into a list
-          platforms=()
-          IFS=',' read -r -a platforms <<< "${PLATFORMS}"
-
           MATRIX="{\"include\":[]}"
-          for platform in "${platforms[@]}"; do
-            MATRIX="$(echo "${MATRIX}" | jq ".include += [{\"platform\": \"${platform}\"}]")"
+          for platform in $(tr ',' ' ' <<< "${PLATFORMS}") ; do
+            MATRIX="$(jq -c ".include += [{\"platform\": \"${platform}\"}]" <<< "${MATRIX}")"
           done
-          echo "matrix=$(echo "${MATRIX}" | jq -c '.')" >> $GITHUB_OUTPUT
+          echo "matrix=${MATRIX}" >> $GITHUB_OUTPUT
 
   build_push:
     name: Build and push image
@@ -168,17 +164,21 @@ jobs:
           PLATFORM: ${{ matrix.platform }}
           COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
           MAX_RETRIES: 3
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
         run: |
           set -x
-          # HACK: push two times so layer annotations are present
-          # TODO: remove me when https://github.com/containers/podman/issues/27796 fixed
           PRIVATE_KEY_FILE="$(mktemp)"
           echo "${COSIGN_PRIVATE_KEY}" > "${PRIVATE_KEY_FILE}"
           trap 'rm -f $PRIVATE_KEY_FILE' EXIT
+          sudo mkdir -p "/etc/containers/registries.d/"
+          echo -e "docker:\n  ${IMAGE_REGISTRY}:\n    use-sigstore-attachments: true" | sudo tee "/etc/containers/registries.d/${REPOSITORY_OWNER}.yaml"
+
+          # HACK: push two times so layer annotations are present
+          # TODO: remove me when https://github.com/containers/podman/issues/27796 fixed
           for _ in $(seq 2); do
-            sudo /home/linuxbrew/.linuxbrew/bin/podman push --retry "${MAX_RETRIES}" --compression-format=zstd --digestfile=/tmp/digestfile "localhost/${IMAGE_NAME}:${DEFAULT_TAG}" "${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}-${PLATFORM}" "--sign-by-sigstore-private-key=${PRIVATE_KEY_FILE}"
+            sudo /home/linuxbrew/.linuxbrew/bin/podman push --retry "${MAX_RETRIES}" --compression-format=zstd --digestfile=/tmp/digestfile "localhost/${IMAGE_NAME}:${DEFAULT_TAG}" "${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}-${PLATFORM}" "--sign-passphrase-file=/dev/null" "--sign-by-sigstore-private-key=${PRIVATE_KEY_FILE}"
           done
-          echo "remote_image_digest=$(< /tmp/digestfile)" | tee "${GITHUB_OUTPUT}"
+          echo "remote_image_digest=$(< ${DIGESTFILE})" | tee "${GITHUB_OUTPUT}"
 
       - name: Create Job Outputs
         if: inputs.publish
@@ -318,8 +318,10 @@ jobs:
         if: inputs.publish
         env:
           REGISTRY: ghcr.io
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | podman login -u "${{ github.actor }}" --password-stdin "${REGISTRY}"
+          echo "${GITHUB_TOKEN}" | podman login -u "${GITHUB_ACTOR}" --password-stdin "${REGISTRY}"
 
       # - name: Install Cosign
       #   uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
@@ -340,6 +342,12 @@ jobs:
           OUTPUT_CSV_FILE="$(mktemp)"
           echo "${OUTPUT_CSV}" | base32 -d | tee "${OUTPUT_CSV_FILE}"
 
+          PRIVATE_KEY_FILE="$(mktemp)"
+          echo "${COSIGN_PRIVATE_KEY}" > "${PRIVATE_KEY_FILE}"
+          trap 'rm -f $PRIVATE_KEY_FILE' EXIT
+          mkdir -p "/etc/containers/registries.d/"
+          echo -e "docker:\n  ${IMAGE_REGISTRY}:\n    use-sigstore-attachments: true" | tee "/etc/containers/registries.d/${REPOSITORY_OWNER}.yaml"
+
           # This is insanely dumb, please PR if you have a better solution ~ @tulilirockz :3c
           IMAGES=$(cat "${OUTPUT_CSV_FILE}" | while IFS=$'\n' read -r ENTRY ; do echo "${ENTRY}" | cut -d, -f2 ; done | sort | uniq | tr "\n" " " | sed 's/.$//')
           for TARGET_IMAGE in ${IMAGES} ; do
@@ -358,14 +366,9 @@ jobs:
 
             # HACK: push two times so layer annotations are present
             # TODO: remove me when https://github.com/containers/podman/issues/27796 fixed
-            PRIVATE_KEY_FILE="$(mktemp)"
-            echo "${COSIGN_PRIVATE_KEY}" > "${PRIVATE_KEY_FILE}"
-            trap 'rm -f $PRIVATE_KEY_FILE' EXIT
             for _ in $(seq 2); do
               while IFS= read -r TAG; do
-                podman manifest push --all=false --compression-format=zstd --digestfile=/tmp/digestfile "${TARGET_MANIFEST}" "${TARGET_MANIFEST}:${TAG}" "--sign-by-sigstore-private-key=${PRIVATE_KEY_FILE})"
+                podman manifest push --all=false --compression-format=zstd "${TARGET_MANIFEST}" "${TARGET_MANIFEST}:${TAG}" "--sign-passphrase-file=/dev/null" "--sign-by-sigstore-private-key=${PRIVATE_KEY_FILE}"
               done <<< "${TAGS}"
             done
-
-            # cosign sign -y --new-bundle-format=false --use-signing-config=false --key env://COSIGN_PRIVATE_KEY "${TARGET_MANIFEST}@$(< /tmp/digestfile)"
           done
