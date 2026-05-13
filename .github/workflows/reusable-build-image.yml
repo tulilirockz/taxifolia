@@ -132,6 +132,7 @@ jobs:
           sudo env IMAGE_FULL="localhost/${IMAGE_NAME}:${DEFAULT_TAG}" "$(which just)" load
 
       - name: Rechunk image
+        if: inputs.rechunk
         run: |
           set -e
           sudo env IMAGE_FULL="localhost/${IMAGE_NAME}:${DEFAULT_TAG}" "$(which just)" ostree-rechunk
@@ -170,8 +171,11 @@ jobs:
           set -x
           # HACK: push two times so layer annotations are present
           # TODO: remove me when https://github.com/containers/podman/issues/27796 fixed
+          PRIVATE_KEY_FILE="$(mktemp)"
+          echo "${COSIGN_PRIVATE_KEY}" > "${PRIVATE_KEY_FILE}"
+          trap 'rm -f $PRIVATE_KEY_FILE' EXIT
           for _ in $(seq 2); do
-            sudo /home/linuxbrew/.linuxbrew/bin/podman push --retry "${MAX_RETRIES}" --compression-format=zstd --digestfile=/tmp/digestfile "localhost/${IMAGE_NAME}:${DEFAULT_TAG}" "${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}-${PLATFORM}" "--sign-by-sigstore-private-key=$(echo <(echo "${COSIGN_PRIVATE_KEY}"))"
+            sudo /home/linuxbrew/.linuxbrew/bin/podman push --retry "${MAX_RETRIES}" --compression-format=zstd --digestfile=/tmp/digestfile "localhost/${IMAGE_NAME}:${DEFAULT_TAG}" "${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}-${PLATFORM}" "--sign-by-sigstore-private-key=${PRIVATE_KEY_FILE}"
           done
           echo "remote_image_digest=$(< /tmp/digestfile)" | tee "${GITHUB_OUTPUT}"
 
@@ -365,9 +369,12 @@ jobs:
 
             # HACK: push two times so layer annotations are present
             # TODO: remove me when https://github.com/containers/podman/issues/27796 fixed
+            PRIVATE_KEY_FILE="$(mktemp)"
+            echo "${COSIGN_PRIVATE_KEY}" > "${PRIVATE_KEY_FILE}"
+            trap 'rm -f $PRIVATE_KEY_FILE' EXIT
             for _ in $(seq 2); do
               while IFS= read -r TAG; do
-                podman manifest push --all=false --compression-format=zstd --digestfile=/tmp/digestfile "${TARGET_MANIFEST}" "${TARGET_MANIFEST}:${TAG}" "--sign-by-sigstore-private-key=$(echo <(echo "${COSIGN_PRIVATE_KEY}"))"
+                podman manifest push --all=false --compression-format=zstd --digestfile=/tmp/digestfile "${TARGET_MANIFEST}" "${TARGET_MANIFEST}:${TAG}" "--sign-by-sigstore-private-key=${PRIVATE_KEY_FILE})"
               done <<< "${TAGS}"
             done
 
