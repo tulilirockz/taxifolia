@@ -48,6 +48,7 @@ env:
   IMAGE_NAME: "${{ github.event.repository.name }}"
   IMAGE_REGISTRY: "ghcr.io/${{ github.repository_owner }}"
   DEFAULT_TAG: "latest"
+  IMAGE_LICENSE: AGPL-2.0
 
 jobs:
   generate_matrix:
@@ -85,7 +86,7 @@ jobs:
     steps:
       - name: Mount BTRFS for podman storage
         if: matrix.platform != 'arm64' && inputs.cleanup_action
-        uses: ublue-os/container-storage-action@911baca08baf30c8654933e9e9723cb399892140
+        uses: ublue-os/container-storage-action@dc1f4c8f17b672069e921f001132f7cf98a423a6
         continue-on-error: true
         with:
           target-dir: /var/lib/containers
@@ -99,8 +100,17 @@ jobs:
       - name: Setup Just
         uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4
 
+      - name: Enable cache for brew
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        if: inputs.publish
+        id: brew-cache
+        with:
+          path: /home/linuxbrew
+          key: brew-${{ matrix.platform }}
+
       - name: Setup image cache
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        if: inputs.publish
         env:
           MATRIX_BASE_NAME: ${{ matrix.base_name }}
         with:
@@ -117,30 +127,38 @@ jobs:
           sudo mv mkosi /usr/src/mkosi
           sudo ln -sf "/usr/src/mkosi/bin/mkosi" /usr/bin/mkosi
 
+      - name: Render configuration (for debugging)
+        run: mkosi cat-config --debug
+
       - name: Build image
         id: build
         env:
-          CI_MKOSI_PROFILES: ${{inputs.profiles}}
+          CI_MKOSI_PROFILES: ${{ inputs.profiles }}
+          CI_MKOSI_RELEASE: ${{ inputs.release }}
+          IMAGE_FULL: localhost/${{ env.IMAGE_NAME }}:${{ env.DEFAULT_TAG }}
         run: |
-          PROFILE_ARGUMENTS=()
-          if [ "$CI_MKOSI_PROFILES" != "" ] ; then
-            PROFILE_ARGUMENTS+=("--profile=$CI_MKOSI_PROFILES")
+          set -e
+          RELEASE_ARGUMENTS=()
+          if [ "$CI_MKOSI_RELEASE" != "" ] ; then
+            RELEASE_ARGUMENTS+=("--release=$CI_MKOSI_RELEASE")
           fi
-          sudo env IMAGE_FULL="localhost/${IMAGE_NAME}:latest" mkosi -B ${PROFILE_ARGUMENTS}
+          sudo mkosi -B -ff --debug --profile=bootc-ostree,${CI_MKOSI_PROFILES} ${PROFILE_ARGUMENTS} ${RELEASE_ARGUMENTS}
 
       - name: Load image
         id: load
         run: |
-          sudo env IMAGE_FULL="localhost/${IMAGE_NAME}:latest" $(which just) load
+          set -e
+          sudo env IMAGE_FULL="localhost/${IMAGE_NAME}:${DEFAULT_TAG}" "$(which just)" load
 
       - name: Rechunk image
-        id: rechunk
         run: |
-          sudo env IMAGE_FULL="localhost/${IMAGE_NAME}:latest" $(which just) ostree-rechunk
+          set -e
+          sudo env IMAGE_FULL="localhost/${IMAGE_NAME}:${DEFAULT_TAG}" "$(which just)" ostree-rechunk
 
       - name: Lint image
         run: |
-          sudo env IMAGE_FULL="localhost/${IMAGE_NAME}:latest" $(which just) lint
+          set -e
+          sudo env IMAGE_FULL="localhost/${IMAGE_NAME}:${DEFAULT_TAG}" "$(which just)" lint
 
       # https://github.com/actions/cache/issues/1533
       - name: Hack around permission issue caching
@@ -161,7 +179,7 @@ jobs:
       # needed because old podman doesn't push layer annotations for
       # the rpm-ostree rechunker at all
       - name: Install Podman from Brew
-        if: inputs.publish
+        if: inputs.publish && steps.brew-cache.outputs.cache-hit != 'true'
         run: |
           /home/linuxbrew/.linuxbrew/bin/brew install podman
 
@@ -176,20 +194,17 @@ jobs:
           MAX_RETRIES: 3
         run: |
           set -x
-          # HACK: push a second time so layer annotations are present
+          # HACK: push two times so layer annotations are present
           # TODO: remove me when https://github.com/containers/podman/issues/27796 fixed
-          for i in $(seq "${MAX_RETRIES}"); do
-            sudo /home/linuxbrew/.linuxbrew/bin/podman push --digestfile=/tmp/digestfile "localhost/${IMAGE_NAME}:${DEFAULT_TAG}" "${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}-${PLATFORM}" && break || sleep $((5 * i));
-          done
-          echo "remote_image_digest=$(< /tmp/digestfile)" | tee "${GITHUB_OUTPUT}"
-
-          for i in $(seq "${MAX_RETRIES}"); do
-            sudo /home/linuxbrew/.linuxbrew/bin/podman push --digestfile=/tmp/digestfile "localhost/${IMAGE_NAME}:${DEFAULT_TAG}" "${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}-${PLATFORM}" && break || sleep $((5 * i));
+          for _ in $(seq 2); do
+            for i in $(seq "${MAX_RETRIES}"); do
+              sudo /home/linuxbrew/.linuxbrew/bin/podman push --compression-format=zstd --digestfile=/tmp/digestfile "localhost/${IMAGE_NAME}:${DEFAULT_TAG}" "${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}-${PLATFORM}" && break || sleep $((5 * i));
+            done
           done
           echo "remote_image_digest=$(< /tmp/digestfile)" | tee "${GITHUB_OUTPUT}"
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@v4.1.0
+        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
         if: inputs.publish
 
       - name: Sign Image
@@ -213,7 +228,7 @@ jobs:
 
       - name: Upload Output Artifacts
         if: inputs.publish
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v5
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ${{ env.IMAGE_NAME }}-${{ matrix.platform }}
           retention-days: 1
@@ -250,29 +265,54 @@ jobs:
             fi
           done
 
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          submodules: true
+
         # This generates a timestamp like what is defined on the ArtifactHub documentation
         # E.G: 2022-02-08T15:38:15Z'
         # https://artifacthub.io/docs/topics/repositories/container-images/
         # https://linux.die.net/man/1/date
       - name: Get current date
         id: date
-        run: echo "date=$(date -u +%Y\-%m\-%d\T%H\:%M\:%S\Z)" | tee "${GITHUB_OUTPUT}"
+        run:
+          set -xeuo pipefail
+          echo "date=$(date -u +%Y\-%m\-%d\T%H\:%M\:%S\Z)" >> "${GITHUB_OUTPUT}"
+
+      - name: Get mkosi metadata
+        id: imagemetadata
+        env:
+          MANUAL_RELEASE: ${{ inputs.release }}
+        run: |
+          set -xeuo pipefail
+          if [ "$MANUAL_RELEASE" != "" ] ; then
+            echo "distributionversion=${MANUAL_RELEASE}" >> "${GITHUB_OUTPUT}"
+          else
+            echo "distributionversion=$(grep "Release=" mkosi.conf | cut -d= -f2)" >> "${GITHUB_OUTPUT}"
+          fi
 
       - name: Image Metadata
-        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6
         id: metadata
         with:
           tags: |
             type=raw,value=${{ env.DEFAULT_TAG }}
+            type=raw,value=${{ steps.imagemetadata.outputs.distributionversion }}
+            type=raw,value=${{ env.DEFAULT_TAG }}-${{ github.sha }}
+            type=raw,value=${{ steps.imagemetadata.outputs.distributionversion }}-${{ github.sha }}
             type=raw,value=${{ env.DEFAULT_TAG }}.{{date 'YYYYMMDD'}}
-            type=raw,value={{date 'YYYYMMDD'}}
+            type=raw,value=${{ steps.imagemetadata.outputs.distributionversion }}.{{date 'YYYYMMDD'}}
+            type=raw,value=${{ env.DEFAULT_TAG }}.{{date 'YYYYMMDD'}}-${{ github.sha }}
+            type=raw,value=${{ steps.imagemetadata.outputs.distributionversion }}.{{date 'YYYYMMDD'}}-${{ github.sha }}
+            type=raw,value={{ date 'YYYYMMDD'}},enable=${{ env.DEFAULT_TAG == 'latest' }}
             type=ref,event=pr
             type=sha,enable=${{ github.event_name == 'pull_request' }}
           labels: |
             containers.bootc=1
             io.artifacthub.package.deprecated=false
             io.artifacthub.package.keywords=${{ env.IMAGE_KEYWORDS }}
-            io.artifacthub.package.license=AGPL-2.0
+            io.artifacthub.package.license=${{ env.IMAGE_LICENSE }}
             io.artifacthub.package.logo-url=${{ env.IMAGE_LOGO_URL }}
             io.artifacthub.package.prerelease=false
             io.artifacthub.package.readme-url=https://raw.githubusercontent.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/${{ github.sha }}/README.md
@@ -287,7 +327,7 @@ jobs:
 
       - name: Fetch Build Outputs
         if: inputs.publish
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v6
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: ${{ env.IMAGE_NAME }}-*
           merge-multiple: true
@@ -318,7 +358,7 @@ jobs:
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login -u "${{ github.actor }}" --password-stdin "${REGISTRY}"
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@v4.1.0
+        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
         if: github.event_name != 'pull_request'
 
       - name: Publish manifest with unified architecture and sign
@@ -352,15 +392,13 @@ jobs:
               podman manifest annotate --index --annotation "${LABEL}" "${TARGET_MANIFEST}"
             done <<< "${LABELS}"
 
-            while IFS= read -r TAG; do
-              podman manifest push --all=false --digestfile=/tmp/digestfile "${TARGET_MANIFEST}" "${TARGET_MANIFEST}:${TAG}"
-            done <<< "${TAGS}"
-
-          # HACK: push a second time so layer annotations are present
-          # TODO: remove me when https://github.com/containers/podman/issues/27796 fixed
-            while IFS= read -r TAG; do
-              podman manifest push --all=false --digestfile=/tmp/digestfile "${TARGET_MANIFEST}" "${TARGET_MANIFEST}:${TAG}"
-            done <<< "${TAGS}"
+            # HACK: push two times so layer annotations are present
+            # TODO: remove me when https://github.com/containers/podman/issues/27796 fixed
+            for _ in $(seq 2); do
+              while IFS= read -r TAG; do
+                podman manifest push --all=false --digestfile=/tmp/digestfile "${TARGET_MANIFEST}" "${TARGET_MANIFEST}:${TAG}"
+              done <<< "${TAGS}"
+            done
 
             cosign sign -y --new-bundle-format=false --use-signing-config=false --key env://COSIGN_PRIVATE_KEY "${TARGET_MANIFEST}@$(< /tmp/digestfile)"
           done
