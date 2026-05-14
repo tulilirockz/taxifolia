@@ -180,13 +180,13 @@ jobs:
           IMAGE_NAME: ${{ env.IMAGE_NAME }}
           IMAGE_DIGEST: ${{ steps.load.outputs.digest }}
           PLATFORM: ${{ matrix.platform }}
-          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+          SIGNING_SECRET: ${{ secrets.SIGNING_SECRET }}
           MAX_RETRIES: 3
           REPOSITORY_OWNER: ${{ github.repository_owner }}
         run: |
           set -x
           PRIVATE_KEY_FILE="$(mktemp)"
-          echo "${COSIGN_PRIVATE_KEY}" > "${PRIVATE_KEY_FILE}"
+          echo "${SIGNING_SECRET}" > "${PRIVATE_KEY_FILE}"
           trap 'rm -f $PRIVATE_KEY_FILE' EXIT
           sudo mkdir -p "/etc/containers/registries.d/"
           echo -e "docker:\n  ${IMAGE_REGISTRY}:\n    use-sigstore-attachments: true" | sudo tee "/etc/containers/registries.d/${REPOSITORY_OWNER}.yaml"
@@ -195,7 +195,7 @@ jobs:
           # HACK: push two times so layer annotations are present
           # TODO: remove me when https://github.com/containers/podman/issues/27796 fixed
           for _ in $(seq 2); do
-            sudo /home/linuxbrew/.linuxbrew/bin/podman push --retry "${MAX_RETRIES}" --compression-format=zstd --digestfile="${DIGESTFILE}" "localhost/${IMAGE_NAME}:${DEFAULT_TAG}" "${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}-${PLATFORM}" "--sign-passphrase-file=/dev/null" "--sign-by-sigstore-private-key=${PRIVATE_KEY_FILE}"
+            sudo podman push --retry "${MAX_RETRIES}" --compression-format=zstd --digestfile="${DIGESTFILE}" "localhost/${IMAGE_NAME}:${DEFAULT_TAG}" "${IMAGE_REGISTRY}/${IMAGE_NAME}:${DEFAULT_TAG}-${PLATFORM}" "--sign-passphrase-file=/dev/null" "--sign-by-sigstore-private-key=${PRIVATE_KEY_FILE}"
           done
           echo "remote_image_digest=$(< "${DIGESTFILE}")" | tee "${GITHUB_OUTPUT}"
 
@@ -296,12 +296,12 @@ jobs:
             org.opencontainers.image.created=${{ steps.date.outputs.date }}
             org.opencontainers.image.description=${{ env.IMAGE_DESC }}
             org.opencontainers.image.documentation=https://raw.githubusercontent.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/${{ github.sha }}/README.md
-            org.opencontainers.image.source=https://github.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/blob/${{ github.sha }}/Containerfile
+            org.opencontainers.image.licenses=${{ env.IMAGE_LICENSE }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/commit/${{ github.sha }}
             org.opencontainers.image.title=${{ env.IMAGE_NAME }}
             org.opencontainers.image.url=https://github.com/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}/tree/${{ github.sha }}
             org.opencontainers.image.vendor=${{ github.repository_owner }}
             org.opencontainers.image.version=${{ env.DEFAULT_TAG }}.{{date 'YYYYMMDD'}}
-
 
       - name: Login to GitHub Container Registry
         if: inputs.publish
@@ -338,65 +338,48 @@ jobs:
           merge-multiple: true
           path: /tmp/artifacts
 
-      - name: Load Outputs
-        if: inputs.publish
-        shell: bash
-        id: load-outputs
-        run: |
-          set -x
-          OUTCSV="$(mktemp)"
-          for digest_file in /tmp/artifacts/*.txt; do
-            # Extract the platform from the file name
-            PLATFORM="$(basename "${digest_file}" ".txt" | sed 's/.*-//g')"
-            IMAGE_NAME="$(basename "${digest_file}" ".txt" | grep -Po ".*-" | sed 's/-$//')"
-            DIGEST="$(< "${digest_file}")"
-            echo "${PLATFORM},${IMAGE_NAME},${DIGEST}" | tee -a "${OUTCSV}"
-          done
-          echo "OUTPUT_CSV=$(base32 -w 0 < "${OUTCSV}")" | tee -a "${GITHUB_OUTPUT}"
-
       - name: Publish manifest with unified architecture and sign
         shell: bash
         if: inputs.publish
         env:
-          COSIGN_EXPERIMENTAL: false
-          MAX_RETRIES: 3
-          COSIGN_PRIVATE_KEY: ${{ secrets.SIGNING_SECRET }}
+          SIGNING_SECRET: ${{ secrets.SIGNING_SECRET }}
           LABELS: ${{ steps.metadata.outputs.labels }}
-          OUTPUT_CSV: ${{ steps.load-outputs.outputs.OUTPUT_CSV }}
           TAGS: ${{ steps.metadata.outputs.tags }}
         run: |
           set -x
 
-          OUTPUT_CSV_FILE="$(mktemp)"
-          echo "${OUTPUT_CSV}" | base32 -d | tee "${OUTPUT_CSV_FILE}"
-
           PRIVATE_KEY_FILE="$(mktemp)"
-          echo "${COSIGN_PRIVATE_KEY}" > "${PRIVATE_KEY_FILE}"
+          echo "${SIGNING_SECRET}" > "${PRIVATE_KEY_FILE}"
           trap 'rm -f $PRIVATE_KEY_FILE' EXIT
-          mkdir -p "/etc/containers/registries.d/"
-          echo -e "docker:\n  ${IMAGE_REGISTRY}:\n    use-sigstore-attachments: true" | tee "/etc/containers/registries.d/${REPOSITORY_OWNER}.yaml"
+          sudo mkdir -p "/etc/containers/registries.d/"
+          echo -e "docker:\n  ${IMAGE_REGISTRY}:\n    use-sigstore-attachments: true" | sudo tee "/etc/containers/registries.d/${REPOSITORY_OWNER}.yaml"
 
-          # This is insanely dumb, please PR if you have a better solution ~ @tulilirockz :3c
-          IMAGES=$(cat "${OUTPUT_CSV_FILE}" | while IFS=$'\n' read -r ENTRY ; do echo "${ENTRY}" | cut -d, -f2 ; done | sort | uniq | tr "\n" " " | sed 's/.$//')
-          for TARGET_IMAGE in ${IMAGES} ; do
+          for digest_file in /tmp/artifacts/*.txt; do
+            # Extract the platform from the file name
+            TARGET_PLATFORM="$(basename "${digest_file}" ".txt" | sed 's/.*-//g')"
+            TARGET_IMAGE="$(basename "${digest_file}" ".txt" | grep -Po ".*-" | sed 's/-$//')"
+            TARGET_DIGEST="$(< "${digest_file}")"
+
             TARGET_MANIFEST="${IMAGE_REGISTRY}/${TARGET_IMAGE}"
-            podman manifest create "${TARGET_MANIFEST}"
+            if ! podman images | grep -F -e "${TARGET_MANIFEST}" ; then
+              podman manifest create "${TARGET_MANIFEST}"
+            fi
 
-            PLATFORMS=$(grep -F -e "${IMAGE}" "${OUTPUT_CSV_FILE}" | while IFS=$'\n' read -r ENTRY ; do echo "${ENTRY}" | cut -d, -f1 ; done | sort | uniq | tr "\n" " " | sed 's/.$//')
-            for TARGET_PLATFORM in ${PLATFORMS} ; do
-              TARGET_DIGEST="$(grep -F -e ",${TARGET_IMAGE}," "${OUTPUT_CSV_FILE}" | grep -F -e "${TARGET_PLATFORM}" | cut -d, -f3 | tr -d "\n")"
-              podman manifest add "${TARGET_MANIFEST}" "${TARGET_MANIFEST}@${TARGET_DIGEST}" --arch "${TARGET_PLATFORM}"
-            done
+            podman manifest add "${TARGET_MANIFEST}" "${TARGET_MANIFEST}@${TARGET_DIGEST}" --arch "${TARGET_PLATFORM}"
+          done
 
+          # We want one per image instead
+          for digest_file in $(find /tmp/artifacts/*.txt | cut -f1 -d- | uniq); do
+            TARGET_IMAGE="$(basename "${digest_file}")"
+            TARGET_MANIFEST="${IMAGE_REGISTRY}/${TARGET_IMAGE}"
             while IFS= read -r LABEL; do
               podman manifest annotate --index --annotation "${LABEL}" "${TARGET_MANIFEST}"
             done <<< "${LABELS}"
-
             # HACK: push two times so layer annotations are present
             # TODO: remove me when https://github.com/containers/podman/issues/27796 fixed
             for _ in $(seq 2); do
               while IFS= read -r TAG; do
-                podman manifest push --all=false --retry "${MAX_RETRIES}" --compression-format=zstd "${TARGET_MANIFEST}" "${TARGET_MANIFEST}:${TAG}" "--sign-passphrase-file=/dev/null" "--sign-by-sigstore-private-key=${PRIVATE_KEY_FILE}"
+                podman manifest push --all=false --compression-format=zstd "${TARGET_MANIFEST}" "${TARGET_MANIFEST}:${TAG}" "--sign-passphrase-file=/dev/null" "--sign-by-sigstore-private-key=${PRIVATE_KEY_FILE}"
               done <<< "${TAGS}"
             done
           done
