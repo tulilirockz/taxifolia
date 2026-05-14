@@ -176,13 +176,11 @@ jobs:
         if: inputs.publish
         id: push
         env:
-          IMAGE_REGISTRY: ${{ env.IMAGE_REGISTRY }}
-          IMAGE_NAME: ${{ env.IMAGE_NAME }}
           IMAGE_DIGEST: ${{ steps.load.outputs.digest }}
-          PLATFORM: ${{ matrix.platform }}
-          SIGNING_SECRET: ${{ secrets.SIGNING_SECRET }}
           MAX_RETRIES: 3
+          PLATFORM: ${{ matrix.platform }}
           REPOSITORY_OWNER: ${{ github.repository_owner }}
+          SIGNING_SECRET: ${{ secrets.SIGNING_SECRET }}
         run: |
           set -x
           PRIVATE_KEY_FILE="$(mktemp)"
